@@ -1,0 +1,115 @@
+#!/usr/bin/python
+
+# Program Name: switch-net
+# Author:       Rob Pantazopoulos
+# Twitter:	@R3MRUM
+# Date:         2016.06.22
+# Decription:	This is a little script that I wrote which enabled me to quickly switch between a static IP and a dynamic IP.
+#		I would switch to DHCP when I needed to connect to the internet in order to update my analysis tools on my linux VM
+#		and then switch back to a static ip to move the VM back into Host-Only isolation. The primary benefit to this script
+#		versus doing it manually is the use of a config file to store static IP properties.
+#
+#		The static IP properties you define are saved within "~/.switch-netrc". Below are the default properties should
+#		you not supply any:
+#
+#		interface:	eth0
+#		ip: 		172.16.0.131
+#		subnet:		255.255.255.0
+
+
+import argparse
+import subprocess 
+import os.path
+import sys
+
+config_file = os.path.expanduser('~')+'/.switch-netrc'
+
+def reset_static(args):
+	print "Resetting default properties for static IP"
+	args.interface = 'eth0'
+	args.ip = '172.16.0.131'
+	args.subnet='255.255.255.0'
+	set_static(args)
+
+def set_dhcp(args):
+	interface = args.interface
+	interface="eth0" if interface is None else interface
+	try:
+		print "Running: ifconfig %s 0.0.0.0 0.0.0.0" % interface
+		subprocess.check_call(["ifconfig", interface, "0.0.0.0", "0.0.0.0"])
+		print "Running: dhclient"
+		subprocess.check_call(["dhclient"])
+	except subprocess.CalledProcessError as e:
+                if e.returncode == 255:
+                        print >> sys.stderr, "ERROR[%s]: You need root permissions to perform this function.\nPlease rerun with sudo." % e.cmd
+                if e.returncode == 1:
+                        print >> sys.stderr, "ERROR[%s]: There was an issue with the values supplied.\nPlease rerun with proper values." % e.cmd
+                print "Exiting"
+                sys.exit(1)
+
+	print "Done."
+
+def set_static(args):
+	import json
+	interface=args.interface
+	ip=args.ip
+	subnet=args.subnet
+	save_flag=False
+
+	if os.path.isfile(config_file):
+		print "Retrieving properties from config file"
+		with open(config_file, 'r') as infile:
+     			data = json.load(infile)
+		if(
+			(interface is not None and interface != data['interface']) or 
+			(ip is not None and ip != data['ip']) or 
+			(subnet is not None and subnet != data['subnet'])
+		  ):
+			save_flag=True
+		interface=data['interface'] if interface is None else interface
+		ip=data['ip'] if ip is None else ip
+		subnet=data['subnet'] if subnet is None else subnet
+	else:
+		print "Config file not found. Building properties based on values passed and default values"
+		interface="eth0" if interface is None else interface
+		ip="172.16.0.131" if ip is None else ip
+		subnet="255.255.255.0" if subnet is None else subnet
+		save_flag=True
+
+	try:
+		print "Running: killall dhclient"
+		subprocess.call(["killall", "dhclient"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+		print "Running: ifconfig %s %s netmask %s" % (interface, ip, subnet)
+		subprocess.check_call(["ifconfig", interface, ip, "netmask", subnet], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+	except subprocess.CalledProcessError as e:
+    		if e.returncode == 255:
+			print >> sys.stderr, "ERROR: You need root permissions to perform this function.\nPlease rerun with sudo.\nExiting."
+			sys.exit(1)
+		if e.returncode == 1 and e.cmd[0] == 'ifconfig':
+			print >> sys.stderr, "ERROR: There was an issue with the values supplied.\nPlease rerun with proper values.\nExiting."
+			sys.exit(1)
+
+	if save_flag:
+		print "Changes to properties detected! Saving configuration to %s" % config_file
+		with open(config_file, "w") as outfile:
+    			json.dump({'interface': interface, 'ip': ip, 'subnet': subnet}, outfile, indent=4)
+
+parser = argparse.ArgumentParser(description="Quickly switch between a static network setup and DHCP. Useful for an isolated lab system that needs to obtain a DHCP IP in order to reach out to the internet to get updates on an ad-hoc basis.")
+subparsers = parser.add_subparsers()
+
+parser_a = subparsers.add_parser('dhcp')
+parser_a.add_argument('-i', '--interface')
+parser_a.set_defaults(func=set_dhcp)
+
+parser_b = subparsers.add_parser('static')
+parser_b.add_argument('-i', '--interface')
+parser_b.add_argument('--ip')
+parser_b.add_argument('-s', '--subnet')
+parser_b.set_defaults(func=set_static)
+
+parser_c = subparsers.add_parser('reset')
+parser_c.set_defaults(func=reset_static)
+
+
+args = parser.parse_args()
+args.func(args)
